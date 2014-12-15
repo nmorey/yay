@@ -55,7 +55,7 @@ Uint16 quit = 0;
 Uint8 grid = 0;
 Uint8 bpp = 0;
 int cfidc = 1;
-
+int isY4M = 0;
 
 static const Uint8 SubWidthC[4] =
   {
@@ -86,6 +86,8 @@ static const Uint8 FrameSize2C[4] =
 int load_frame(){
   Uint32 cnt;  
   /* Fill in video data */
+  if(isY4M)
+	  fseek(fpointer, strlen("FRAME "), SEEK_CUR);
   cnt = fread(y_data, 1, width*height, fpointer);
   //fprintf(stderr,"read %d y bytes\n", cnt);
   if(cnt < width*height){
@@ -213,6 +215,7 @@ int main(int argc, char *argv[])
   int     play_yuv = 0;
   unsigned int start_ticks = 0;
   Uint32 vflags;
+  int depth = 8;
 
   if (argc == 1) {
     print_usage();
@@ -243,6 +246,11 @@ int main(int argc, char *argv[])
   argc -= optind;
   
   vfilename = argv[0];
+  fpointer = fopen(vfilename, "rb"); 
+  if (fpointer == NULL){
+    fprintf(stderr, "Error opening %s\n", vfilename);
+    return 1;
+  }
   
   if(!used_s_opt) {
     // try to find picture size from filename or path
@@ -253,8 +261,151 @@ int main(int argc, char *argv[])
       strcat(picsize, "\0");
     }
     if (sscanf(picsize, "%dx%d", &width, &height) != 2) {
-      fprintf(stdout, "No geometry information found in path/filename.\nPlease use -s <width>x<height> paramter.\n");
-      return 1;
+		/* Maybe it's Y4M ? */
+		const char * y4m_magic = "YUV4MPEG2";
+		char input[9];
+
+		if(fread(input, 1, 9, fpointer) != 9 || memcmp(y4m_magic, input, 9)){
+			fprintf(stdout, "No geometry information found in path/filename.\nPlease use -s <width>x<height> paramter.\n");
+			return 1;
+		} else {
+			/* We got a Y4M ! Hurray ! */
+			fseek(fpointer, 0, SEEK_SET);
+			while (!feof(fpointer)){
+				// Skip Y4MPEG string
+				int c = fgetc(fpointer);
+				int d, csp = 0;
+				while (!feof(fpointer) && (c != ' ') && (c != '\n')){
+					c = fgetc(fpointer);
+				}
+
+				while (c == ' ' && !feof(fpointer)){
+					// read parameter identifier
+					switch (fgetc(fpointer)){
+					case 'W':
+						width = 0;
+						while (!feof(fpointer)){
+							c = fgetc(fpointer);
+
+							if (c == ' ' || c == '\n'){
+								break;
+							} else {
+								width = width * 10 + (c - '0');
+							}
+						}
+						break;
+					case 'H':
+						height = 0;
+						while (!feof(fpointer)){
+							c = fgetc(fpointer);
+							if (c == ' ' || c == '\n'){
+								break;
+							} else {
+								height = height * 10 + (c - '0');
+							}
+						}
+						break;
+
+					case 'F':
+						/* rateNum = 0; */
+						/* rateDenom = 0; */
+						while (!feof(fpointer)){
+							c = fgetc(fpointer);
+							if (c == '.'){
+								/* rateDenom = 1; */
+								while (!feof(fpointer)){
+									c = fgetc(fpointer);
+									if (c == ' ' || c == '\n'){
+										break;
+									} else {
+										/* rateNum = rateNum * 10 + (c - '0'); */
+										/* rateDenom = rateDenom * 10; */
+									}
+								}
+								
+								break;
+							} else if (c == ':') {
+								while (!feof(fpointer)) {
+									c = fgetc(fpointer);
+									if (c == ' ' || c == '\n') {
+										break;
+									} else {
+										/* rateDenom = rateDenom * 10 + (c - '0'); */
+									}
+								}
+								break;
+							} else {
+								/* rateNum = rateNum * 10 + (c - '0'); */
+							}
+						}
+						break;
+
+					case 'A':
+						/* sarWidth = 0; */
+						/* sarHeight = 0; */
+						while (!feof(fpointer)) {
+							c = fgetc(fpointer);
+							if (c == ':'){
+								while (!feof(fpointer)){
+									c = fgetc(fpointer);
+									if (c == ' ' || c == '\n'){
+										break;
+									} else {
+										/* sarHeight = sarHeight * 10 + (c - '0'); */
+									}
+								}
+								break;
+							} else {
+								/* sarWidth = sarWidth * 10 + (c - '0'); */
+							}
+						}
+						break;
+						
+					case 'C':
+						csp = 0;
+						d = 0;
+						while (!feof(fpointer)){
+							c = fgetc(fpointer);
+							
+							if (c <= '9' && c >= '0'){
+								csp = csp * 10 + (c - '0');
+							} else if (c == 'p') {
+								// example: C420p16
+								while (!feof(fpointer)) {
+									c = fgetc(fpointer);
+									
+									if (c <= '9' && c >= '0')
+										d = d * 10 + (c - '0');
+									else
+										break;
+								}
+								break;
+							} else
+								break;
+						}
+						if (d >= 8 && d <= 16)
+							depth = d;
+						cfidc = (csp == 444) ? 3 : (csp == 422) ? 2 : 1;
+						break;
+						
+					default:
+						while (!feof(fpointer)) {
+							// consume this unsupported configuration word
+							c = fgetc(fpointer);
+							if (c == ' ' || c == '\n')
+								break;
+						}
+						
+						break;
+					}
+				}
+				
+				if (c == '\n'){
+					break;
+				}
+			}
+			isY4M = ftell(fpointer);
+		}
     }
   }
   // some WM can't handle small windows...
@@ -312,11 +463,6 @@ int main(int argc, char *argv[])
       cr_data = malloc(width * height * sizeof(Uint8) / SubSizeC[cfidc]);
     }
 
-  fpointer = fopen(vfilename, "rb"); 
-  if (fpointer == NULL){
-    fprintf(stderr, "Error opening %s\n", vfilename);
-    return 1;
-  }
   // send event to display first frame
   event.type = SDL_KEYDOWN;
   event.key.keysym.sym = SDLK_RIGHT;
@@ -378,7 +524,7 @@ int main(int argc, char *argv[])
 	    { 
 	      if(frame>1){
 		frame--;
-		fseek(fpointer, ((frame-1)*height*width*FrameSize2C[cfidc])/2 , SEEK_SET);
+		fseek(fpointer, isY4M + (frame-1)*(height*width*FrameSize2C[cfidc] /2 + (isY4M ? strlen("FRAME ") : 0)) , SEEK_SET);
 		//if(draw_frame())
 		load_frame();
 		draw_frame();
@@ -411,7 +557,7 @@ int main(int argc, char *argv[])
 	    { 
 	      if(frame>1){
 		frame=1;
-		fseek(fpointer, 0, SEEK_SET);
+		fseek(fpointer, isY4M, SEEK_SET);
 		//if(draw_frame())
 		load_frame();
 		draw_frame();
