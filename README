@@ -12,11 +12,13 @@ width and height.
 Optionally you can provide width and height parameters via "-s
 <width>x<height>" paramter.
 
+For Y4M file, resolution is auto extracted from metadata. However only YUV420 format is supported yet
 
 usage:
 ------
 
 yay [-s <width>x<height>] [-f format] filename.yuv
+yay [-s <width>x<height>] [-f format] filename.y4m
 
 formats: 
  0: Y only 
